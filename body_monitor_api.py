@@ -25,6 +25,7 @@ _TOPICS = {
     "stress": "压力状态变化",
     "test": "联动测试",
 }
+_SUPPORTED_METRICS = frozenset(_TOPICS)
 _TODAY_CONTEXT_KEYS = ("steps", "sleep_score", "spo2", "weight_change")
 
 
@@ -220,6 +221,8 @@ def _project_event(row: sqlite3.Row, *, now: datetime) -> dict[str, Any] | None:
 def _canonical_context(
     value: Any, *, expected_metric: str
 ) -> dict[str, Any] | None:
+    if expected_metric not in _SUPPORTED_METRICS:
+        return None
     if not isinstance(value, dict) or set(value) != {
         "metric",
         "value",
@@ -288,8 +291,8 @@ class BodyMonitorEventStore:
         occurred_at = _as_utc(occurred_at)
         normalized_value = float(value)
         normalized_mean = float(baseline_mean)
-        if not metric or not isinstance(metric, str):
-            raise ValueError("metric must be a non-empty string")
+        if not isinstance(metric, str) or metric not in _SUPPORTED_METRICS:
+            raise ValueError("unsupported event metric")
         if severity not in {"info", "warning", "critical"}:
             raise ValueError("unsupported event severity")
         if not math.isfinite(normalized_value) or not math.isfinite(normalized_mean):

@@ -1,7 +1,9 @@
 import importlib
 import sys
+import tempfile
 import types
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -52,6 +54,7 @@ def _load_plugin_class():
 
 
 BodyMonitorPlugin = _load_plugin_class()
+from astrbot_plugin_body_monitor.body_monitor_api import BodyMonitorEventStore, BodyMonitorExtensionAPI
 
 
 class BodyMonitorPluginBehaviorTests(unittest.IsolatedAsyncioTestCase):
@@ -103,6 +106,30 @@ class BodyMonitorPluginBehaviorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(["aiocqhttp:FriendMessage:10001"], call["targets"])
         self.assertEqual({"steps": 1234}, call["today_context"])
         self.assertIn("测试事件已创建", results[0])
+
+    async def test_upload_and_periodic_paths_share_stable_event_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plugin = BodyMonitorPlugin.__new__(BodyMonitorPlugin)
+            plugin.db_path = str(Path(tmp) / "body_monitor.db")
+            plugin.event_store = BodyMonitorEventStore(plugin.db_path)
+            plugin.metrics_config = {"heart_rate": {"enabled": True, "threshold": 2, "cooldown": 4}}
+            plugin.alert_cooldown = {}
+            plugin._calculate_baseline = lambda metric: (70, 10)
+            plugin._is_in_cooldown = lambda metric, hours: False
+            plugin._get_targets = lambda: ["aiocqhttp:FriendMessage:10001"]
+            plugin._get_today_context = lambda: {"steps": 1234}
+            plugin._get_body_composition_context = lambda: {}
+            plugin._in_quiet_hours = lambda: False
+            plugin._is_baseline_ready = lambda: True
+            sample = (datetime.now(timezone.utc).replace(microsecond=0).isoformat(), 100)
+            plugin._get_latest_metric_record = lambda metric: sample
+
+            await plugin._check_metric("heart_rate", sample[1], sample[0])
+            plugin.alert_cooldown.clear()
+            await plugin._periodic_check()
+
+            feed = BodyMonitorExtensionAPI(plugin.db_path).read_proactive_events(after_cursor=0)
+            self.assertEqual(1, len(feed["events"]))
 
 
 if __name__ == "__main__":

@@ -67,9 +67,17 @@ class BodyMonitorExtensionAPITests(unittest.TestCase):
             conn = sqlite3.connect(db_path)
             columns = {row[1] for row in conn.execute("PRAGMA table_info(alerts)")}
             legacy_count = conn.execute("SELECT COUNT(*) FROM alerts").fetchone()[0]
+            legacy_row = conn.execute(
+                "SELECT timestamp, metric, value, baseline_mean, baseline_std, "
+                "z_score, llm_response, resolved FROM alerts WHERE id = 1"
+            ).fetchone()
             conn.close()
 
             self.assertEqual(1, legacy_count)
+            self.assertEqual(
+                ("2026-07-27T10:00:00", "heart_rate", 120.0, 70.0, 10.0, 5.0, "legacy", 0),
+                legacy_row,
+            )
             self.assertTrue(
                 {"event_key", "expires_at", "targets_json", "context_json", "severity", "topic"}
                 <= columns
@@ -207,6 +215,19 @@ class BodyMonitorExtensionAPITests(unittest.TestCase):
                 occurred_at + timedelta(minutes=30),
                 datetime.fromisoformat(event["expires_at"]),
             )
+
+    def test_unknown_metric_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = BodyMonitorEventStore(str(Path(tmp) / "body_monitor.db"))
+
+            with self.assertRaisesRegex(ValueError, "unsupported event metric"):
+                store.record_health_alert(
+                    metric="custom_metric",
+                    value=1,
+                    baseline_mean=0,
+                    occurred_at=datetime.now(timezone.utc),
+                    targets=["aiocqhttp:FriendMessage:1"],
+                )
 
     def test_database_rebuild_changes_stream_id(self):
         with tempfile.TemporaryDirectory() as tmp:

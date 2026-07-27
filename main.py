@@ -800,7 +800,7 @@ class BodyMonitorPlugin(Star):
 
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, request: ProviderRequest, *args, **kwargs):
-        """每次 LLM 请求前，自动注入最新身体数据到 prompt 中。
+        """仅为已配置私聊中的明确健康询问注入最新身体数据。
         直接修改 request.prompt 而不是 system_prompt，确保 LLM 一定能看到数据。
         system_prompt 也同步注入作为双保险。
         """

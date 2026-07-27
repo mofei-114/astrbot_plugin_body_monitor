@@ -33,6 +33,7 @@ _QUERY_TERMS = (
     "告警",
     "异常",
 )
+_QUESTION_MARKERS = ("?", "？", "吗", "么", "呢", "是否", "有没有", "正不正常", "高不高", "低不低")
 
 
 def should_inject_health_data(
@@ -46,15 +47,25 @@ def should_inject_health_data(
     origin = str(getattr(event, "unified_msg_origin", "") or "")
     if not origin or origin not in set(configured_targets):
         return False
-    if _is_group_event(event, origin):
+    if _is_group_event(event, origin) or not _is_private_origin(origin):
         return False
 
     message = str(getattr(event, "message_str", "") or prompt or "").strip()
     lowered = message.lower()
     if lowered.startswith("/body_"):
         return True
-    return any(term in lowered for term in _HEALTH_TERMS) and any(
-        term in lowered for term in _QUERY_TERMS
+    return any(term in lowered for term in _HEALTH_TERMS) and (
+        any(term in lowered for term in _QUERY_TERMS)
+        or any(marker in lowered for marker in _QUESTION_MARKERS)
+    )
+
+
+def _is_private_origin(origin: str) -> bool:
+    lowered = origin.lower()
+    return (
+        ":friendmessage:" in lowered
+        or ":privatemessage:" in lowered
+        or lowered.startswith(("qq_private:", "private:"))
     )
 
 

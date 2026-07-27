@@ -25,6 +25,9 @@ class HealthDataInjectionPolicyTests(unittest.TestCase):
             )
         )
         self.assertTrue(
+            should_inject_health_data(FakeEvent(target, "我今天心率高吗？"), configured)
+        )
+        self.assertTrue(
             should_inject_health_data(FakeEvent(target, "/body_status"), configured)
         )
         self.assertFalse(
@@ -39,6 +42,12 @@ class HealthDataInjectionPolicyTests(unittest.TestCase):
             should_inject_health_data(
                 FakeEvent("aiocqhttp:FriendMessage:other", "我的心率数据怎么样？"),
                 configured,
+            )
+        )
+        non_private = "custom:ChannelMessage:10001"
+        self.assertFalse(
+            should_inject_health_data(
+                FakeEvent(non_private, "我的心率数据怎么样？"), [non_private]
             )
         )
         self.assertFalse(
