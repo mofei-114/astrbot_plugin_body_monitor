@@ -1,8 +1,8 @@
 # Body Monitor - AstrBot 身体数据监测插件
 
-**Version:** v1.1.0
+**Version:** v1.3.0
 
-基于 Health Connect Webhook 方案，接收小米手环 + 小米体脂秤 S400 数据，进行基线计算和异常检测，触发 LLM 主动关心。
+基于 Health Connect Webhook 方案，接收小米手环 + 小米体脂秤 S400 数据，进行基线计算和异常检测，并向 Private Companion 提供结构化健康事件。
 
 ### 中国大陆设备
 - [MiHealth - 小米运动健康 AstrBot 插件](https://github.com/ludan0312/astrbot_plugin_mi_health)
@@ -25,15 +25,13 @@
 
 1. AstrBot WebUI → **插件管理** → 搜索 `Body Monitor` 安装，或上传本插件 zip
 2. 在 WebUI 中配置插件参数（见下方配置项）
-3. 使用 `/body_target_add here` 添加推送目标
+3. 使用 `/body_target_add here` 添加健康事件目标
 4. 重启 AstrBot
 
 ## 配置项
 
 | 配置项 | 说明 | 默认值 |
 |-------|------|-------|
-| `llm_provider_id` | LLM 提供商（留空则自动选择默认） | `""` |
-| `persona_id` | 人格设定（留空则使用 AstrBot 默认人格） | `""` |
 | `data_port` | HTTP 数据接收端口 | `7788` |
 | `baseline_days` | 基线收集天数 | `7` |
 | `baseline_mode` | 基线模式 (`sliding`/`fixed`) | `sliding` |
@@ -51,15 +49,7 @@
 | `spo2_threshold` | 血氧异常 z-score 阈值 | `2.0` |
 | `spo2_cooldown` | 血氧告警冷却（小时） | `4` |
 
-### LLM 与人格配置
-
-- **LLM 提供商**：在插件配置界面点击"选择提供商..."，从 AstrBot 已配置的 LLM 中选择。留空则自动使用默认 Provider。
-- **人格设定**：在插件配置界面点击"选择人格..."，从 AstrBot 已配置的人格中选择。留空则使用默认人格。
-
-数据查询命令（`/body_status` 等）会走 AstrBot 的 LLM 管道，因此：
-- 回复会**继承所选人格的口吻和角色设定**
-- 如果安装了 RVC/TTS 插件，回复会**自动触发语音转换**
-- 人格的 `system_prompt` 和数据注入共同作用，生成自然、个性化的关心回复
+旧配置中的 `llm_provider_id` 和 `persona_id` 会被忽略。主动文案、审查和发送统一由 Private Companion 负责。
 
 ## 手机端配置
 
@@ -80,23 +70,25 @@
 > 以上命令会触发 LLM 生成自然语言回复，数据自动注入到 LLM 上下文中。如果配置了 RVC/TTS，会自动输出语音。
 
 ### 目标平台管理
-- `/body_target_add here` - 将当前会话添加为推送目标
-- `/body_target_add <UMO>` - 添加指定 UMO 为推送目标
+- `/body_target_add here` - 将当前会话添加为健康事件目标
+- `/body_target_add <UMO>` - 添加指定 UMO 为健康事件目标
 - `/body_target_remove <UMO>` - 移除目标
 - `/body_target_list` - 列出所有目标
 
 ### 测试
-- `/body_test` - 测试发送主动关心消息
+- `/body_test` - 创建一条供 Private Companion 拉取的测试事件
 
-## 主动关心机制
+## Private Companion 联动
 
 插件会定时检查数据异常，触发条件：
 1. **基线建立期**：前 7 天收集数据，不触发异常检测
 2. **异常检测**：心率、睡眠评分、血氧等指标偏离基线 z-score 阈值时触发
-3. **静默时段**：默认 23:00-08:00 不发送关心消息
+3. **静默时段**：默认 23:00-08:00 不创建健康事件
 4. **冷却时间**：同一指标有冷却时间，避免刷屏
 
-关心消息通过 LLM 生成，使用配置的人格口吻，自动推送到 `/body_target_add` 添加的目标会话。
+异常只会写入本地数据库，不会调用 LLM 或直接发送消息。事件包含发生时间、30 分钟有效期、规范指标上下文和发生时的目标快照。Private Companion 通过 `get_body_monitor_api().read_proactive_events(...)` 增量拉取，并负责目标校验、文案生成、审查和发送。
+
+首次拉取只初始化到最新游标，不补发历史事件；正常运行中即使事件过期或格式不兼容，扫描游标仍会前进。
 
 ## 数据解析
 
@@ -108,7 +100,7 @@
 ## 体脂秤数据说明
 
 - 体脂秤数据一天一次，不参与实时异常检测
-- 用于 LLM 关心时的上下文（如"今天体重比昨天轻了 0.5kg"）
+- 可作为结构化健康事件的有限当日上下文
 - 称重时同步测量的心率会参与实时异常检测
 
 ## 路由器配置
@@ -122,8 +114,8 @@
 ## 注意事项
 
 - 前 7 天为基线收集期，不会触发异常检测
-- 静默时段（默认 23:00-08:00）不会发送关心消息
+- 静默时段（默认 23:00-08:00）不会创建健康事件
 - 同一指标有冷却时间，避免刷屏
 - 体脂秤数据需要先在小米运动健康中同步到 Health Connect
 - 插件数据存储在 AstrBot 数据目录下，卸载/重装不会丢失历史数据
-- 数据查询命令走 LLM 管道，需要确保 AstrBot 已配置可用的 LLM Provider
+- 身体数据只会注入已配置目标发起的私聊健康查询；群聊、普通消息和 Private Companion 内部主动生成不会注入
