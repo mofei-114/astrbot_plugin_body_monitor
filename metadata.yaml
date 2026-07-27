@@ -1,7 +1,7 @@
 name: astrbot_plugin_body_monitor
 display_name: Body Monitor 身体数据监测
-desc: 基于 Health Connect Webhook 接收身体数据，计算个人基线并为 Private Companion 提供结构化健康事件。
-short_desc: 接收身体数据并提供可拉取的健康事件
+desc: 基于 Health Connect Webhook 接收身体数据，计算个人基线并主动关怀，可选联动 Private Companion。
+short_desc: 身体数据监测、主动关怀与可选联动
 version: v1.3.0
 author: ludan
 repo: https://github.com/ludan0312/astrbot_plugin_body_monitor

@@ -41,8 +41,9 @@ class BodyMonitorExtensionAPI:
 
     proactive_event_api_version = PROACTIVE_EVENT_API_VERSION
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, *, proactive_events_enabled: bool = True):
         self._db_path = str(db_path)
+        self._proactive_events_enabled = bool(proactive_events_enabled)
         self._lock = RLock()
         self._initialize_schema()
 
@@ -148,7 +149,7 @@ class BodyMonitorExtensionAPI:
                     (int(after_cursor), limit),
                 ).fetchall()
 
-        if after_cursor is None:
+        if after_cursor is None or not self._proactive_events_enabled:
             return {
                 "version": PROACTIVE_EVENT_API_VERSION,
                 "stream_id": stream_id,

@@ -1,4 +1,28 @@
 {
+  "enable_private_companion_integration": {
+    "description": "启用 Private Companion 联动",
+    "type": "bool",
+    "default": false,
+    "hint": "默认关闭。关闭时保留 Body Monitor 原有的 LLM 主动关怀和直接发送；开启后异常只写入结构化健康事件，由 Private Companion 拉取、审查并发送，避免重复提醒。"
+  },
+  "llm_provider_id": {
+    "description": "LLM 提供商（留空则自动选择默认）",
+    "type": "string",
+    "default": "",
+    "_special": "select_provider",
+    "condition": {
+      "enable_private_companion_integration": false
+    }
+  },
+  "persona_id": {
+    "description": "人格设定（留空则使用 AstrBot 默认人格）",
+    "type": "string",
+    "default": "",
+    "_special": "select_persona",
+    "condition": {
+      "enable_private_companion_integration": false
+    }
+  },
   "data_port": {
     "description": "HTTP 数据接收端口",
     "type": "int",

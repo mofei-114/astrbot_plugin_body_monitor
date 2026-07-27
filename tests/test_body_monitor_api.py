@@ -216,6 +216,29 @@ class BodyMonitorExtensionAPITests(unittest.TestCase):
                 datetime.fromisoformat(event["expires_at"]),
             )
 
+    def test_disabled_feed_advances_to_latest_without_exposing_events(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "body_monitor.db"
+            store = BodyMonitorEventStore(str(db_path))
+            occurred_at = datetime.now(timezone.utc).replace(microsecond=0)
+            store.record_health_alert(
+                metric="heart_rate",
+                value=118,
+                baseline_mean=72,
+                occurred_at=occurred_at,
+                targets=["aiocqhttp:FriendMessage:1"],
+            )
+            api = BodyMonitorExtensionAPI(
+                str(db_path), proactive_events_enabled=False
+            )
+
+            feed = api.read_proactive_events(after_cursor=0)
+
+            self.assertEqual([], feed["events"])
+            self.assertEqual(1, feed["next_cursor"])
+            self.assertEqual(1, feed["latest_cursor"])
+            self.assertFalse(feed["has_more"])
+
     def test_unknown_metric_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = BodyMonitorEventStore(str(Path(tmp) / "body_monitor.db"))

@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from aiohttp import web
-from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api import logger
 from astrbot.api.star import Context, Star, register
 from astrbot.api.provider import ProviderRequest
@@ -23,7 +23,7 @@ from .body_monitor_api import (
 from .request_policy import should_inject_health_data
 
 
-@register("body_monitor", "ludan", "小米手环+体脂秤身体数据监测", "v1.3.0")
+@register("body_monitor", "ludan", "小米手环+体脂秤身体数据监测与主动关心", "v1.3.0")
 class BodyMonitorPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -35,6 +35,11 @@ class BodyMonitorPlugin(Star):
         self.baseline_days = self.config.get("baseline_days", 7)
         self.baseline_mode = self.config.get("baseline_mode", "sliding")
         self.check_interval = self.config.get("check_interval", 300)
+        self.enable_private_companion_integration = bool(
+            self.config.get("enable_private_companion_integration", False)
+        )
+        self.llm_provider_id = self.config.get("llm_provider_id", "").strip()
+        self.persona_id = self.config.get("persona_id", "").strip()
         # 静默时段
         self.quiet_hours = {
             "enabled": self.config.get("quiet_hours_enabled", True),
@@ -65,7 +70,10 @@ class BodyMonitorPlugin(Star):
         self.db_path = self._get_db_path()
         self._init_db()
         self.event_store = BodyMonitorEventStore(self.db_path)
-        self.extension_api = BodyMonitorExtensionAPI(self.db_path)
+        self.extension_api = BodyMonitorExtensionAPI(
+            self.db_path,
+            proactive_events_enabled=self.enable_private_companion_integration,
+        )
         register_body_monitor_api(self.extension_api)
 
         # 告警冷却记录
@@ -445,7 +453,16 @@ class BodyMonitorPlugin(Star):
             if self._is_in_cooldown(metric, cooldown_hours):
                 return
 
-            self._record_alert(metric, value, mean, sample_time)
+            if self.enable_private_companion_integration:
+                self._record_proactive_event(metric, value, mean, sample_time)
+            else:
+                message = await self._generate_care_message(
+                    metric, value, mean, std, z_score
+                )
+                await self._send_care_message(message)
+                self._record_legacy_alert(
+                    metric, value, mean, std, z_score, message
+                )
             self.alert_cooldown[metric] = datetime.now()
 
     def _calculate_baseline(self, metric: str) -> Optional[tuple]:
@@ -528,6 +545,62 @@ class BodyMonitorPlugin(Star):
             return start_time <= current_time <= end_time
         else:
             return current_time >= start_time or current_time <= end_time
+
+    async def _generate_care_message(
+        self,
+        metric: str,
+        value: float,
+        mean: float,
+        std: float,
+        z_score: float,
+    ) -> str:
+        context = self._get_today_context()
+        body_context = self._get_body_composition_context()
+
+        metric_names = {
+            "heart_rate": "心率",
+            "steps": "步数",
+            "sleep_score": "睡眠评分",
+            "spo2": "血氧",
+            "stress": "压力值",
+        }
+        metric_name = metric_names.get(metric, metric)
+
+        weight_change = body_context.get("weight_change", "")
+        body_fat = body_context.get("body_fat", "")
+        bmi = body_context.get("bmi", "")
+
+        body_hint = ""
+        if weight_change:
+            body_hint += f"体重较昨日{weight_change}。"
+        if body_fat:
+            body_hint += f"体脂率{body_fat}%。"
+        if bmi:
+            body_hint += f"BMI {bmi}。"
+
+        prompt = f"""当前时间：{datetime.now().strftime("%H:%M")}
+异常指标：{metric_name} {value:.0f}
+基线：{mean:.1f} ± {std:.1f}
+偏离程度：{z_score:.2f} 个标准差
+
+用户今日状态：
+- 步数：{context.get('steps', '未知')}
+- 睡眠评分：{context.get('sleep_score', '未知')}
+- 血氧：{context.get('spo2', '未知')}%
+
+用户身体成分：
+- {body_hint if body_hint else '今日未称重'}
+
+请生成一条简短的关心消息（50字以内）。不要吓人，如果今日有称重数据可以结合体重变化给出关心。"""
+
+        fallbacks = {
+            "heart_rate": f"刚才心率有点{'快' if z_score > 0 else '慢'}哦，记得{'深呼吸休息一下' if z_score > 0 else '活动活动'}~",
+            "sleep_score": "昨晚睡眠评分有点低，今天早点休息吧，别熬夜了",
+            "spo2": "血氧有点低，注意通风，不舒服的话及时休息",
+            "stress": "压力值有点高，深呼吸，放轻松~",
+        }
+        fallback = fallbacks.get(metric, f"{metric_name}有点异常，注意身体哦~")
+        return await self._llm_generate(prompt, fallback)
 
     def _get_today_context(self) -> dict:
         conn = self._db_connect()
@@ -654,6 +727,22 @@ class BodyMonitorPlugin(Star):
         conn.close()
         return context
 
+    async def _send_care_message(self, message: str):
+        umos = self._get_targets()
+        if not umos:
+            logger.warning(
+                "[BodyMonitor] No targets configured, use /body_target_add to add"
+            )
+            return
+
+        for umo in umos:
+            try:
+                chain = MessageChain().message(message)
+                await self.context.send_message(umo, chain)
+                logger.info("[BodyMonitor] Care message sent")
+            except Exception as exc:
+                logger.error(f"[BodyMonitor] Send error: {exc}")
+
     def _get_targets(self) -> List[str]:
         conn = self._db_connect()
         c = conn.cursor()
@@ -662,7 +751,7 @@ class BodyMonitorPlugin(Star):
         conn.close()
         return [r[0] for r in rows]
 
-    def _record_alert(
+    def _record_proactive_event(
         self, metric: str, value: float, mean: float, sample_time: str | None
     ):
         occurred_at = self._parse_event_time(sample_time)
@@ -682,6 +771,78 @@ class BodyMonitorPlugin(Star):
             "[BodyMonitor] Health event persisted "
             f"(metric={metric}, created={result.created}, event_id={result.event_id})"
         )
+
+    def _record_legacy_alert(
+        self,
+        metric: str,
+        value: float,
+        mean: float,
+        std: float,
+        z_score: float,
+        message: str,
+    ):
+        conn = self._db_connect()
+        c = conn.cursor()
+        c.execute(
+            """
+            INSERT INTO alerts (
+                timestamp, metric, value, baseline_mean, baseline_std,
+                z_score, llm_response
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                datetime.now().isoformat(),
+                metric,
+                value,
+                mean,
+                std,
+                z_score,
+                message,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+    # ========== 人格 & LLM 辅助方法 ==========
+
+    async def _get_system_prompt(self) -> Optional[str]:
+        """获取配置的人格 system_prompt，用于插件内的 LLM 调用。"""
+        if not self.persona_id:
+            return None
+        try:
+            persona = await self.context.persona_manager.get_persona(self.persona_id)
+            if persona and persona.system_prompt:
+                return persona.system_prompt
+        except Exception as exc:
+            logger.debug(f"[BodyMonitor] Get persona failed: {exc}")
+        return None
+
+    async def _llm_generate(self, prompt: str, fallback: str) -> str:
+        """调用配置的 LLM 生成人格化关怀，失败时返回固定文案。"""
+        try:
+            provider = None
+            if self.llm_provider_id:
+                provider = self.context.get_provider_by_id(self.llm_provider_id)
+            if not provider:
+                try:
+                    provider = self.context.get_provider()
+                except Exception:
+                    pass
+
+            if not provider:
+                logger.warning("[BodyMonitor] No LLM provider available")
+                return fallback
+
+            system_prompt = await self._get_system_prompt()
+            response = await provider.text_chat(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                context=[],
+            )
+            return response.completion_text.strip()
+        except Exception as exc:
+            logger.error(f"[BodyMonitor] LLM generate error: {exc}")
+            return fallback
 
     @staticmethod
     def _parse_event_time(sample_time: str | None) -> datetime:
@@ -781,6 +942,12 @@ class BodyMonitorPlugin(Star):
 
     @filter.command("body_test")
     async def cmd_test(self, event: AstrMessageEvent):
+        if not self.enable_private_companion_integration:
+            test_msg = "测试关心消息：记得多喝水，注意休息~"
+            await self._send_care_message(test_msg)
+            yield event.plain_result("✅ 测试消息已发送")
+            return
+
         result = self.event_store.record_health_alert(
             metric="test",
             value=1,
