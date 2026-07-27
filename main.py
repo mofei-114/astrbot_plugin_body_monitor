@@ -453,17 +453,33 @@ class BodyMonitorPlugin(Star):
             if self._is_in_cooldown(metric, cooldown_hours):
                 return
 
+            handled = False
             if self.enable_private_companion_integration:
-                self._record_proactive_event(metric, value, mean, sample_time)
+                handled = self._record_proactive_event(
+                    metric, value, mean, sample_time
+                )
             else:
+                targets = self._get_targets()
+                if not targets:
+                    logger.warning(
+                        "[BodyMonitor] No targets configured, "
+                        "use /body_target_add to add"
+                    )
+                    return
                 message = await self._generate_care_message(
                     metric, value, mean, std, z_score
                 )
-                await self._send_care_message(message)
+                sent_count = await self._send_care_message(
+                    message, targets=targets
+                )
+                if sent_count <= 0:
+                    return
                 self._record_legacy_alert(
                     metric, value, mean, std, z_score, message
                 )
-            self.alert_cooldown[metric] = datetime.now()
+                handled = True
+            if handled:
+                self.alert_cooldown[metric] = datetime.now()
 
     def _calculate_baseline(self, metric: str) -> Optional[tuple]:
         conn = self._db_connect()
@@ -727,21 +743,26 @@ class BodyMonitorPlugin(Star):
         conn.close()
         return context
 
-    async def _send_care_message(self, message: str):
-        umos = self._get_targets()
+    async def _send_care_message(
+        self, message: str, *, targets: list[str] | None = None
+    ) -> int:
+        umos = self._get_targets() if targets is None else targets
         if not umos:
             logger.warning(
                 "[BodyMonitor] No targets configured, use /body_target_add to add"
             )
-            return
+            return 0
 
+        sent_count = 0
         for umo in umos:
             try:
                 chain = MessageChain().message(message)
                 await self.context.send_message(umo, chain)
+                sent_count += 1
                 logger.info("[BodyMonitor] Care message sent")
             except Exception as exc:
                 logger.error(f"[BodyMonitor] Send error: {exc}")
+        return sent_count
 
     def _get_targets(self) -> List[str]:
         conn = self._db_connect()
@@ -753,7 +774,13 @@ class BodyMonitorPlugin(Star):
 
     def _record_proactive_event(
         self, metric: str, value: float, mean: float, sample_time: str | None
-    ):
+    ) -> bool:
+        targets = self._get_targets()
+        if not targets:
+            logger.warning(
+                "[BodyMonitor] No targets configured, use /body_target_add to add"
+            )
+            return False
         occurred_at = self._parse_event_time(sample_time)
         today_context = self._get_today_context()
         body_context = self._get_body_composition_context()
@@ -764,13 +791,14 @@ class BodyMonitorPlugin(Star):
             value=value,
             baseline_mean=mean,
             occurred_at=occurred_at,
-            targets=self._get_targets(),
+            targets=targets,
             today_context=today_context,
         )
         logger.info(
             "[BodyMonitor] Health event persisted "
             f"(metric={metric}, created={result.created}, event_id={result.event_id})"
         )
+        return True
 
     def _record_legacy_alert(
         self,
@@ -944,16 +972,23 @@ class BodyMonitorPlugin(Star):
     async def cmd_test(self, event: AstrMessageEvent):
         if not self.enable_private_companion_integration:
             test_msg = "测试关心消息：记得多喝水，注意休息~"
-            await self._send_care_message(test_msg)
-            yield event.plain_result("✅ 测试消息已发送")
+            sent_count = await self._send_care_message(test_msg)
+            if sent_count > 0:
+                yield event.plain_result(f"✅ 测试消息已发送到 {sent_count} 个目标")
+            else:
+                yield event.plain_result("❌ 测试消息发送失败，请检查目标和平台状态")
             return
 
+        targets = self._get_targets()
+        if not targets:
+            yield event.plain_result("❌ 尚未配置目标，请先使用 /body_target_add")
+            return
         result = self.event_store.record_health_alert(
             metric="test",
             value=1,
             baseline_mean=0,
             occurred_at=datetime.now(timezone.utc),
-            targets=self._get_targets(),
+            targets=targets,
             today_context=self._get_today_context(),
             severity="info",
         )

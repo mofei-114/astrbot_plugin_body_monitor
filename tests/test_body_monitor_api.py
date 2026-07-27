@@ -58,6 +58,7 @@ class BodyMonitorExtensionAPITests(unittest.TestCase):
             repeated = api.read_proactive_events(after_cursor=None)
 
             self.assertEqual(1, initialized["version"])
+            self.assertTrue(initialized["enabled"])
             self.assertEqual([], initialized["events"])
             self.assertEqual(1, initialized["next_cursor"])
             self.assertEqual(1, initialized["latest_cursor"])
@@ -235,6 +236,7 @@ class BodyMonitorExtensionAPITests(unittest.TestCase):
             feed = api.read_proactive_events(after_cursor=0)
 
             self.assertEqual([], feed["events"])
+            self.assertFalse(feed["enabled"])
             self.assertEqual(1, feed["next_cursor"])
             self.assertEqual(1, feed["latest_cursor"])
             self.assertFalse(feed["has_more"])

@@ -152,6 +152,7 @@ class BodyMonitorExtensionAPI:
         if after_cursor is None or not self._proactive_events_enabled:
             return {
                 "version": PROACTIVE_EVENT_API_VERSION,
+                "enabled": self._proactive_events_enabled,
                 "stream_id": stream_id,
                 "next_cursor": latest_cursor,
                 "latest_cursor": latest_cursor,
@@ -169,6 +170,7 @@ class BodyMonitorExtensionAPI:
 
         return {
             "version": PROACTIVE_EVENT_API_VERSION,
+            "enabled": self._proactive_events_enabled,
             "stream_id": stream_id,
             "next_cursor": next_cursor,
             "latest_cursor": latest_cursor,

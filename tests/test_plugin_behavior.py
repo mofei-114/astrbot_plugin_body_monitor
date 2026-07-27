@@ -95,7 +95,7 @@ class BodyMonitorPluginBehaviorTests(unittest.IsolatedAsyncioTestCase):
         plugin.alert_cooldown = {}
         plugin._calculate_baseline = lambda metric: (70, 10)
         plugin._is_in_cooldown = lambda metric, hours: False
-        plugin._record_proactive_event = Mock()
+        plugin._record_proactive_event = Mock(return_value=True)
         plugin._generate_care_message = AsyncMock()
         plugin._send_care_message = AsyncMock()
         plugin._record_legacy_alert = Mock()
@@ -117,8 +117,9 @@ class BodyMonitorPluginBehaviorTests(unittest.IsolatedAsyncioTestCase):
         plugin.alert_cooldown = {}
         plugin._calculate_baseline = lambda metric: (70, 10)
         plugin._is_in_cooldown = lambda metric, hours: False
+        plugin._get_targets = lambda: ["aiocqhttp:FriendMessage:10001"]
         plugin._generate_care_message = AsyncMock(return_value="legacy care")
-        plugin._send_care_message = AsyncMock()
+        plugin._send_care_message = AsyncMock(return_value=1)
         plugin._record_legacy_alert = Mock()
         plugin._record_proactive_event = Mock()
 
@@ -127,7 +128,9 @@ class BodyMonitorPluginBehaviorTests(unittest.IsolatedAsyncioTestCase):
         plugin._generate_care_message.assert_awaited_once_with(
             "heart_rate", 100, 70, 10, 3
         )
-        plugin._send_care_message.assert_awaited_once_with("legacy care")
+        plugin._send_care_message.assert_awaited_once_with(
+            "legacy care", targets=["aiocqhttp:FriendMessage:10001"]
+        )
         plugin._record_legacy_alert.assert_called_once_with(
             "heart_rate", 100, 70, 10, 3, "legacy care"
         )
@@ -158,7 +161,7 @@ class BodyMonitorPluginBehaviorTests(unittest.IsolatedAsyncioTestCase):
     async def test_disabled_body_test_preserves_direct_send(self):
         plugin = BodyMonitorPlugin.__new__(BodyMonitorPlugin)
         plugin.enable_private_companion_integration = False
-        plugin._send_care_message = AsyncMock()
+        plugin._send_care_message = AsyncMock(return_value=1)
         plugin.event_store = SimpleNamespace(record_health_alert=Mock())
         event = SimpleNamespace(plain_result=lambda text: text)
 
@@ -168,18 +171,36 @@ class BodyMonitorPluginBehaviorTests(unittest.IsolatedAsyncioTestCase):
             "测试关心消息：记得多喝水，注意休息~"
         )
         plugin.event_store.record_health_alert.assert_not_called()
-        self.assertIn("测试消息已发送", results[0])
+        self.assertIn("测试消息已发送到 1 个目标", results[0])
+
+    async def test_failed_legacy_send_does_not_record_or_enter_cooldown(self):
+        plugin = BodyMonitorPlugin.__new__(BodyMonitorPlugin)
+        plugin.enable_private_companion_integration = False
+        plugin.metrics_config = {"heart_rate": {"threshold": 2, "cooldown": 4}}
+        plugin.alert_cooldown = {}
+        plugin._calculate_baseline = lambda metric: (70, 10)
+        plugin._is_in_cooldown = lambda metric, hours: False
+        plugin._get_targets = lambda: ["aiocqhttp:FriendMessage:10001"]
+        plugin._generate_care_message = AsyncMock(return_value="legacy care")
+        plugin._send_care_message = AsyncMock(return_value=0)
+        plugin._record_legacy_alert = Mock()
+
+        await plugin._check_metric("heart_rate", 100)
+
+        plugin._record_legacy_alert.assert_not_called()
+        self.assertNotIn("heart_rate", plugin.alert_cooldown)
 
     async def test_legacy_direct_send_uses_astrbot_message_chain(self):
         plugin = BodyMonitorPlugin.__new__(BodyMonitorPlugin)
         plugin._get_targets = lambda: ["aiocqhttp:FriendMessage:10001"]
         plugin.context = SimpleNamespace(send_message=AsyncMock())
 
-        await plugin._send_care_message("legacy care")
+        sent_count = await plugin._send_care_message("legacy care")
 
         umo, chain = plugin.context.send_message.await_args.args
         self.assertEqual("aiocqhttp:FriendMessage:10001", umo)
         self.assertEqual("legacy care", chain.text)
+        self.assertEqual(1, sent_count)
 
     def test_legacy_alert_keeps_original_fields_and_stays_out_of_event_feed(self):
         with tempfile.TemporaryDirectory() as tmp:
